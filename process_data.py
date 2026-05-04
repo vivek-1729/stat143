@@ -39,9 +39,14 @@ BASE = Path(__file__).parent
 # Seasons: (goal-data season string, betting CSV, Season indicator for model)
 # ---------------------------------------------------------------------------
 SEASONS = [
-    ("2007-2008", "E0-3.csv", 0),
-    ("2009-2010", "E0-2.csv", 1),
-    ("2010-2011", "E0-4.csv", 2),
+    ("2007-2008", "E0-3.csv",         0),
+    ("2009-2010", "E0-2.csv",         1),
+    ("2010-2011", "E0-4.csv",         2),
+    ("2011-2012", "E0-1112-E0.csv",   3),
+    ("2012-2013", "E0-1213-E0.csv",   4),
+    ("2013-2014", "E0-1314-E0.csv",   5),
+    ("2014-2015", "E0-1415-E0.csv",   6),
+    ("2015-2016", "E0-1516-E0.csv",   7),
 ]
 
 # ---------------------------------------------------------------------------
@@ -77,6 +82,12 @@ TEAM_MAP = {
     "West Ham United":        "West Ham",
     "Wigan Athletic":         "Wigan",
     "Wolverhampton Wanderers":"Wolves",
+    # 2011-16 era additions
+    "Cardiff City":           "Cardiff",
+    "Norwich City":           "Norwich",
+    "Queens Park Rangers":    "QPR",
+    "Swansea City":           "Swansea",
+    "Watford FC":             "Watford",
     # 2024-25 era (included for completeness)
     "AFC Bournemouth":        "Bournemouth",
     "Brighton & Hove Albion": "Brighton",
@@ -168,6 +179,7 @@ for season_str, bet_file, season_label in SEASONS:
     # Older files (pre-2014) use BbAvH/D/A (BetBrain avg — same source as paper).
     # Newer files use AvgH/D/A. Fall back gracefully.
     bet = pd.read_csv(BASE / bet_file)
+    bet = bet.dropna(subset=["Date"])
     bet["date"] = pd.to_datetime(bet["Date"].apply(parse_bet_date))
     h_col = "BbAvH" if "BbAvH" in bet.columns else "AvgH"
     d_col = "BbAvD" if "BbAvD" in bet.columns else "AvgD"

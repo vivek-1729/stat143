@@ -313,3 +313,140 @@ tables <- rbind(
 )
 write.csv(tables, "model_tables.csv", row.names = FALSE)
 cat("Coefficient tables saved → model_tables.csv\n")
+
+# ── RQ3: Team-specific equalizer speed (home conceded first) ─────────────────
+#
+# Subset: obs_type=2 rows where the away team scored first (FirstGoalTeam=0).
+# In these 422 observations the home team is trailing and we track whether
+# (and how quickly) they score next — their "equalizer."
+#
+# Cox model: Surv(tstart, tstop, event) ~ ProbWin + SeasonF + TimeOfFirstGoal
+#            + home_team
+#
+# team HRs are relative to Wigan (reference: most obs, all 3 seasons → stable).
+# Reading is excluded: 0 equalization events → coefficient undefined.
+# Teams present in only 1 season are flagged; their estimates conflate team
+# and season effects (wider CIs make this visible).
+
+library(ggplot2)
+
+eq_df <- df[df$obs_type == 2 & df$FirstGoalTeam == 0, ]
+eq_df <- eq_df[eq_df$home_team != "Reading", ]   # 0 events → inestimable
+
+# Per-team summary for labels and reliability flag
+team_info <- aggregate(
+  cbind(n_obs = event, n_events = event) ~ home_team + Season,
+  data   = eq_df,
+  FUN    = length
+)
+team_summary <- aggregate(
+  cbind(n_obs = event, n_events = event) ~ home_team,
+  data = eq_df,
+  FUN  = function(x) c(n = length(x), ev = sum(x))
+)
+# Rebuild cleanly
+team_summary <- data.frame(
+  home_team = names(table(eq_df$home_team)),
+  n_obs     = as.integer(table(eq_df$home_team)),
+  n_events  = as.integer(tapply(eq_df$event, eq_df$home_team, sum)),
+  n_seasons = as.integer(tapply(eq_df$Season, eq_df$home_team,
+                                function(x) length(unique(x))))
+)
+
+# Reference team: Wigan (most observations, all 3 seasons)
+eq_df$team_f <- relevel(factor(eq_df$home_team), ref = "Wigan")
+
+eq_cox <- coxph(
+  Surv(tstart, tstop, event) ~ ProbWin + SeasonF + TimeOfFirstGoal + team_f,
+  data  = eq_df,
+  ties  = "efron"
+)
+
+cat("\n", strrep("=", 60), "\n", sep = "")
+cat(" RQ3: Team equalizer speed (home conceded first)\n")
+cat(strrep("=", 60), "\n", sep = "")
+cat("Observations:", nrow(eq_df), " | Events:", sum(eq_df$event),
+    " | Teams:", nlevels(eq_df$team_f), "\n\n")
+
+# Global test for team effects
+lr_null <- coxph(Surv(tstart, tstop, event) ~ ProbWin + SeasonF + TimeOfFirstGoal,
+                 data = eq_df, ties = "efron")
+lr_stat <- 2 * (eq_cox$loglik[2] - lr_null$loglik[2])
+lr_df   <- nlevels(eq_df$team_f) - 1
+lr_p    <- pchisq(lr_stat, df = lr_df, lower.tail = FALSE)
+cat(sprintf("Global LRT for team effects: chi2 = %.2f, df = %d, p = %.3f\n",
+            lr_stat, lr_df, lr_p))
+
+# Extract team coefficients + CIs
+s_eq   <- summary(eq_cox)$coefficients
+team_r <- grepl("^team_f", rownames(s_eq))
+
+team_coefs <- data.frame(
+  home_team = c("Wigan", sub("^team_f", "", rownames(s_eq)[team_r])),
+  coef      = c(0,    s_eq[team_r, "coef"]),
+  se        = c(0,    s_eq[team_r, "se(coef)"]),
+  HR        = c(1,    exp(s_eq[team_r, "coef"])),
+  CI_low    = c(1,    exp(s_eq[team_r, "coef"] - 1.96 * s_eq[team_r, "se(coef)"])),
+  CI_high   = c(1,    exp(s_eq[team_r, "coef"] + 1.96 * s_eq[team_r, "se(coef)"])),
+  p_val     = c(NA,   s_eq[team_r, "Pr(>|z|)"])
+)
+
+# Merge in team counts and reliability flag
+team_coefs <- merge(team_coefs, team_summary, by = "home_team")
+team_coefs$label <- paste0(team_coefs$home_team,
+                           " (", team_coefs$n_events, "/", team_coefs$n_obs, ")")
+team_coefs$reliable <- team_coefs$n_seasons == 3   # in all 3 seasons
+
+# Sort by HR for plot
+team_coefs <- team_coefs[order(team_coefs$HR), ]
+team_coefs$y_pos <- seq_len(nrow(team_coefs))
+
+# Print table
+print_cols <- c("home_team", "HR", "CI_low", "CI_high", "p_val", "n_events", "n_obs", "n_seasons")
+out_tbl <- team_coefs[order(team_coefs$HR, decreasing = TRUE), print_cols]
+out_tbl[, c("HR","CI_low","CI_high")] <- lapply(out_tbl[, c("HR","CI_low","CI_high")], round, 3)
+out_tbl$p_val <- ifelse(is.na(out_tbl$p_val), "ref", signif(out_tbl$p_val, 3))
+print(out_tbl, row.names = FALSE)
+
+write.csv(out_tbl, "figures/team_equalizer_table.csv", row.names = FALSE)
+
+# ── Forest plot with 95% CIs ─────────────────────────────────────────────────
+p_eq <- ggplot(team_coefs, aes(x = HR, y = y_pos)) +
+  # CI bars — thinner for 1-season teams to signal lower reliability
+  geom_segment(aes(x = CI_low, xend = CI_high, y = y_pos, yend = y_pos,
+                   alpha = ifelse(reliable, 1, 0.45)), linewidth = 0.7) +
+  # Point estimate — filled for reliable (3-season), hollow for 1–2 season
+  geom_point(aes(shape = reliable, fill = HR > 1),
+             size = 3, stroke = 0.9) +
+  scale_shape_manual(values = c("FALSE" = 1, "TRUE" = 19),
+                     labels = c("FALSE" = "1–2 seasons", "TRUE" = "All 3 seasons"),
+                     name   = "Data coverage") +
+  scale_fill_manual(values = c("FALSE" = "#c0392b", "TRUE" = "#2980b9"),
+                    guide  = "none") +
+  scale_alpha_identity() +
+  geom_vline(xintercept = 1, linetype = "dashed", colour = "grey50") +
+  scale_y_continuous(breaks = team_coefs$y_pos, labels = team_coefs$label) +
+  labs(
+    title    = "Team response after conceding first: equalizer hazard multipliers",
+    subtitle = paste0(
+      "Cox model (n=", nrow(eq_df), " obs, ", sum(eq_df$event), " events) | ",
+      "reference = Wigan | controls: ProbWin, Season, T1\n",
+      "Label format: team (equalizations / games conceding first) | ",
+      "hollow = 1–2 seasons only (wider CI expected)\n",
+      sprintf("Global test for team effects: chi2=%.1f, df=%d, p=%.3f",
+              lr_stat, lr_df, lr_p)
+    ),
+    x = "Hazard multiplier (>1 = faster equalizer than Wigan, controlling for strength)",
+    y = NULL
+  ) +
+  theme_bw(base_size = 11) +
+  theme(
+    plot.title    = element_text(face = "bold", size = 12),
+    plot.subtitle = element_text(size = 9, colour = "grey30"),
+    axis.text.y   = element_text(size = 9),
+    legend.position = "bottom"
+  )
+
+ggsave("figures/team_equalizer_ranking.png", p_eq,
+       width = 10, height = 12, dpi = 150)
+cat("\nSaved → figures/team_equalizer_ranking.png\n")
